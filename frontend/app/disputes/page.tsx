@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 
 import AppTopNav from "@/components/AppTopNav";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -17,7 +17,7 @@ function pretty(value: string) {
   return value.replaceAll("_", " ");
 }
 
-export default function DisputesPage() {
+function DisputesPageContent() {
   const router = useRouter();
   const { locale } = useLanguage();
   const t = (enText: string, arText: string) => withLocale(locale, enText, arText);
@@ -226,5 +226,13 @@ export default function DisputesPage() {
         ) : null}
       </main>
     </div>
+  );
+}
+
+export default function DisputesPage() {
+  return (
+    <Suspense fallback={<section className="panel">Loading...</section>}>
+      <DisputesPageContent />
+    </Suspense>
   );
 }

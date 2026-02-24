@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Suspense, useEffect, useMemo, useState } from "react";
 
 import AppTopNav from "@/components/AppTopNav";
 import { useLanguage } from "@/components/LanguageProvider";
@@ -10,7 +10,7 @@ import { ProviderAvailability, Service, createBooking, getErrorMessage, getMe, g
 import { getAuthToken, setStoredUser } from "@/lib/auth-client";
 import { withLocale } from "@/lib/i18n";
 
-export default function NewBookingPage() {
+function NewBookingPageContent() {
   const router = useRouter();
   const { locale } = useLanguage();
   const t = (enText: string, arText: string) => withLocale(locale, enText, arText);
@@ -222,5 +222,13 @@ export default function NewBookingPage() {
         ) : null}
       </main>
     </div>
+  );
+}
+
+export default function NewBookingPage() {
+  return (
+    <Suspense fallback={<section className="panel">Loading...</section>}>
+      <NewBookingPageContent />
+    </Suspense>
   );
 }

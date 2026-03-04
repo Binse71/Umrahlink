@@ -16,6 +16,23 @@ from .serializers import PayoutActionSerializer, PayoutLedgerSerializer, Provide
 from .services import sync_payout_ledger_for_booking
 
 
+def validate_payout_approval_preconditions(*, booking: Booking):
+    if booking.status != Booking.Status.COMPLETED:
+        raise ValidationError("Payout approval requires a completed booking.")
+    if not booking.has_both_completion_confirmations:
+        raise ValidationError("Payout approval requires both provider and customer completion confirmations.")
+    if booking.escrow_status != Booking.EscrowStatus.RELEASED:
+        raise ValidationError("Payout approval requires escrow status RELEASED.")
+
+    try:
+        dispute = booking.dispute
+    except Exception:
+        dispute = None
+
+    if dispute and dispute.status in {"OPEN", "UNDER_REVIEW"}:
+        raise ValidationError("Payout approval is blocked while the booking has an open dispute.")
+
+
 class ProviderPayoutProfileMeView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -103,6 +120,7 @@ class PayoutLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
 
         if payout.status not in {PayoutLedger.Status.PENDING, PayoutLedger.Status.FAILED}:
             raise ValidationError("Only pending or failed payouts can be approved.")
+        validate_payout_approval_preconditions(booking=payout.booking)
 
         payout.status = PayoutLedger.Status.APPROVED
         payout.admin_note = note

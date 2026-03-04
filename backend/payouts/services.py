@@ -1,8 +1,6 @@
 from decimal import Decimal
 from typing import Optional
 
-from django.utils import timezone
-
 from accounts.models import ProviderProfile, User
 from bookings.models import Booking
 
@@ -52,7 +50,8 @@ def sync_payout_ledger_for_booking(*, booking: Booking, actor: Optional[User] = 
     }
 
     if should_create_or_update:
-        target_status = PayoutLedger.Status.APPROVED if booking.escrow_status == Booking.EscrowStatus.RELEASED else PayoutLedger.Status.PENDING
+        # Keep payout approval as an explicit admin action; sync only prepares pending payout records.
+        target_status = PayoutLedger.Status.PENDING
 
         if payout is None:
             payout = PayoutLedger.objects.create(
@@ -64,8 +63,6 @@ def sync_payout_ledger_for_booking(*, booking: Booking, actor: Optional[User] = 
                 status=target_status,
                 payout_method=payout_method,
                 payout_details_snapshot=payout_snapshot,
-                approved_by=actor if target_status == PayoutLedger.Status.APPROVED else None,
-                approved_at=timezone.now() if target_status == PayoutLedger.Status.APPROVED else None,
             )
             return payout
 
@@ -76,13 +73,9 @@ def sync_payout_ledger_for_booking(*, booking: Booking, actor: Optional[User] = 
         payout.payout_method = payout_method
         payout.payout_details_snapshot = payout_snapshot
 
-        if payout.status in {PayoutLedger.Status.PENDING, PayoutLedger.Status.APPROVED} and payout.status != target_status:
+        if payout.status in {PayoutLedger.Status.PENDING, PayoutLedger.Status.FAILED} and payout.status != target_status:
             payout.status = target_status
             update_fields.append("status")
-            if target_status == PayoutLedger.Status.APPROVED:
-                payout.approved_by = actor
-                payout.approved_at = timezone.now()
-                update_fields.extend(["approved_by", "approved_at"])
 
         payout.save(update_fields=list(dict.fromkeys(update_fields)))
         return payout

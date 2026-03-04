@@ -196,20 +196,27 @@ class ProviderProfileSerializer(serializers.ModelSerializer):
     def get_profile_photo_url(self, obj):
         return resolve_provider_photo_url(self.context.get("request"), obj)
 
+    @staticmethod
+    def _safe_payout_profile(obj):
+        try:
+            return obj.payout_profile
+        except Exception:
+            return None
+
     def get_payout_method(self, obj):
-        payout_profile = getattr(obj, "payout_profile", None)
+        payout_profile = self._safe_payout_profile(obj)
         if payout_profile:
             return payout_profile.method
         return ""
 
     def get_payout_updated_at(self, obj):
-        payout_profile = getattr(obj, "payout_profile", None)
+        payout_profile = self._safe_payout_profile(obj)
         if payout_profile:
             return payout_profile.updated_at
         return None
 
     def get_payout_details(self, obj):
-        payout_profile = getattr(obj, "payout_profile", None)
+        payout_profile = self._safe_payout_profile(obj)
         if not payout_profile:
             return {}
 

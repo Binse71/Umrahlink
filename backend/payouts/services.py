@@ -37,7 +37,10 @@ def sync_payout_ledger_for_booking(*, booking: Booking, actor: Optional[User] = 
     gross_amount = Decimal(str(booking.subtotal_amount or "0.00")).quantize(Decimal("0.01"))
     platform_fee = Decimal(str(booking.platform_fee or "0.00")).quantize(Decimal("0.01"))
     net_amount = (gross_amount - platform_fee).quantize(Decimal("0.01"))
-    payout_profile = getattr(provider, "payout_profile", None)
+    try:
+        payout_profile = provider.payout_profile
+    except Exception:
+        payout_profile = None
     payout_method, payout_snapshot = _build_snapshot(payout_profile)
 
     payout = PayoutLedger.objects.filter(booking=booking).first()

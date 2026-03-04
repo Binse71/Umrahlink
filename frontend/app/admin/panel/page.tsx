@@ -68,6 +68,7 @@ export default function AdminPanelPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sectionErrors, setSectionErrors] = useState<string[]>([]);
   const [decisionDialog, setDecisionDialog] = useState<DisputeDecisionDialogState | null>(null);
   const [decisionNote, setDecisionNote] = useState("");
 
@@ -89,7 +90,7 @@ export default function AdminPanelPage() {
       }
       setStoredUser(me);
 
-      const [providerResponse, usersResponse, bookingsResponse, disputesResponse, payoutResponse] = await Promise.all([
+      const [providerResponse, usersResponse, bookingsResponse, disputesResponse, payoutResponse] = await Promise.allSettled([
         listAdminProviders(token, providerStatusFilter || undefined),
         listAdminUsers(token, {
           role: userRoleFilter || undefined,
@@ -100,13 +101,48 @@ export default function AdminPanelPage() {
         listPayoutLedger(token)
       ]);
 
-      setProviders(providerResponse.results);
-      setUsers(usersResponse.results);
-      setBookings(bookingsResponse.results);
-      setDisputes(disputesResponse.results);
-      setPayouts(payoutResponse.results);
+      const failedSections: string[] = [];
+
+      if (providerResponse.status === "fulfilled") {
+        setProviders(providerResponse.value.results);
+      } else {
+        setProviders([]);
+        failedSections.push(t("Provider Moderation", "إدارة المزودين"));
+      }
+
+      if (usersResponse.status === "fulfilled") {
+        setUsers(usersResponse.value.results);
+      } else {
+        setUsers([]);
+        failedSections.push(t("User Moderation", "إدارة المستخدمين"));
+      }
+
+      if (bookingsResponse.status === "fulfilled") {
+        setBookings(bookingsResponse.value.results);
+      } else {
+        setBookings([]);
+        failedSections.push(t("Booking Escrow Controls", "عناصر تحكم ضمان الحجوزات"));
+      }
+
+      if (disputesResponse.status === "fulfilled") {
+        setDisputes(disputesResponse.value.results);
+      } else {
+        setDisputes([]);
+        failedSections.push(t("Dispute Resolution", "حل النزاعات"));
+      }
+
+      if (payoutResponse.status === "fulfilled") {
+        setPayouts(payoutResponse.value.results);
+      } else {
+        setPayouts([]);
+        failedSections.push(t("Provider Payout Queue", "طابور سحوبات المزودين"));
+      }
+
+      setSectionErrors(failedSections);
+      setError(null);
     } catch (err) {
       setError(getErrorMessage(err));
+      setSectionErrors([]);
     } finally {
       setLoading(false);
     }
@@ -229,6 +265,11 @@ export default function AdminPanelPage() {
         {loading ? <section className="panel">{t("Loading admin data...", "جاري تحميل بيانات الإدارة...")}</section> : null}
         {message ? <p className="notice success">{message}</p> : null}
         {error ? <p className="notice error">{error}</p> : null}
+        {!error && sectionErrors.length > 0 ? (
+          <p className="notice error">
+            {t("Some sections failed to load:", "تعذر تحميل بعض الأقسام:")} {sectionErrors.join(", ")}
+          </p>
+        ) : null}
 
         {!loading ? (
           <>

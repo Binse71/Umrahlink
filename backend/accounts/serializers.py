@@ -2,9 +2,11 @@ import re
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.urls import reverse
 from rest_framework import serializers
 
 from .models import CustomerProfile, ProviderProfile
+from .photo_store import delete_provider_photo, get_provider_photo, upsert_provider_photo
 
 User = get_user_model()
 
@@ -50,6 +52,8 @@ def validate_image_upload(file_obj):
     content_type = getattr(file_obj, "content_type", "")
     if content_type and not content_type.startswith("image/"):
         raise serializers.ValidationError("Upload a valid image file.")
+    if getattr(file_obj, "size", 0) > 5 * 1024 * 1024:
+        raise serializers.ValidationError("Profile photo must be 5 MB or smaller.")
     return file_obj
 
 
@@ -63,6 +67,45 @@ def resolve_file_url(request, file_field):
     if request:
         return request.build_absolute_uri(url)
     return url
+
+
+def resolve_provider_photo_url(request, profile):
+    if not profile:
+        return ""
+    stored_photo = get_provider_photo(provider_profile_id=profile.pk)
+    if stored_photo:
+        photo_path = reverse("provider-directory-photo", kwargs={"pk": profile.pk})
+        if request:
+            return request.build_absolute_uri(photo_path)
+        return photo_path
+    file_field = getattr(profile, "profile_photo", None)
+    if not file_field:
+        return ""
+    try:
+        if file_field.storage.exists(file_field.name):
+            return resolve_file_url(request, file_field)
+    except Exception:  # pragma: no cover
+        return ""
+    return ""
+
+
+def read_uploaded_photo_blob(file_obj):
+    if not file_obj:
+        return None, ""
+    try:
+        file_obj.seek(0)
+    except Exception:  # pragma: no cover
+        pass
+    content = file_obj.read()
+    if not content:
+        return None, ""
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    try:
+        file_obj.seek(0)
+    except Exception:  # pragma: no cover
+        pass
+    return content, str(getattr(file_obj, "content_type", "") or "application/octet-stream")
 
 
 def normalize_provider_location(value):
@@ -146,10 +189,45 @@ class ProviderProfileSerializer(serializers.ModelSerializer):
     profile_photo = serializers.FileField(required=False, allow_null=True, write_only=True)
     profile_photo_url = serializers.SerializerMethodField()
     remove_profile_photo = serializers.BooleanField(required=False, default=False, write_only=True)
+    payout_method = serializers.SerializerMethodField()
+    payout_updated_at = serializers.SerializerMethodField()
+    payout_details = serializers.SerializerMethodField()
 
     def get_profile_photo_url(self, obj):
-        request = self.context.get("request")
-        return resolve_file_url(request, obj.profile_photo)
+        return resolve_provider_photo_url(self.context.get("request"), obj)
+
+    def get_payout_method(self, obj):
+        payout_profile = getattr(obj, "payout_profile", None)
+        if payout_profile:
+            return payout_profile.method
+        return ""
+
+    def get_payout_updated_at(self, obj):
+        payout_profile = getattr(obj, "payout_profile", None)
+        if payout_profile:
+            return payout_profile.updated_at
+        return None
+
+    def get_payout_details(self, obj):
+        payout_profile = getattr(obj, "payout_profile", None)
+        if not payout_profile:
+            return {}
+
+        if payout_profile.method == "SAUDI_BANK":
+            return {
+                "bank_account_name": payout_profile.bank_account_name,
+                "bank_name": payout_profile.bank_name,
+                "saudi_iban": payout_profile.saudi_iban,
+            }
+        if payout_profile.method == "MPESA":
+            return {
+                "mpesa_full_name": payout_profile.mpesa_full_name,
+                "mpesa_phone": payout_profile.mpesa_phone,
+            }
+        return {
+            "usdt_network": payout_profile.usdt_network,
+            "usdt_wallet_address": payout_profile.usdt_wallet_address,
+        }
 
     def validate_profile_photo(self, value):
         return validate_image_upload(value)
@@ -188,11 +266,31 @@ class ProviderProfileSerializer(serializers.ModelSerializer):
 
         if remove_profile_photo and instance.profile_photo:
             instance.profile_photo.delete(save=False)
+        if remove_profile_photo:
             instance.profile_photo = None
-        elif new_profile_photo and instance.profile_photo and instance.profile_photo.name != new_profile_photo.name:
-            instance.profile_photo.delete(save=False)
+            validated_data["profile_photo"] = None
+        elif new_profile_photo:
+            if instance.profile_photo and instance.profile_photo.name != new_profile_photo.name:
+                instance.profile_photo.delete(save=False)
 
-        return super().update(instance, validated_data)
+        profile = super().update(instance, validated_data)
+        if remove_profile_photo:
+            try:
+                delete_provider_photo(provider_profile_id=profile.id)
+            except Exception:  # pragma: no cover
+                pass
+        elif new_profile_photo:
+            blob, content_type = read_uploaded_photo_blob(new_profile_photo)
+            if blob:
+                try:
+                    upsert_provider_photo(
+                        provider_profile_id=profile.id,
+                        content=blob,
+                        content_type=content_type,
+                    )
+                except Exception:  # pragma: no cover
+                    pass
+        return profile
 
     class Meta:
         model = ProviderProfile
@@ -207,6 +305,9 @@ class ProviderProfileSerializer(serializers.ModelSerializer):
             "profile_photo",
             "profile_photo_url",
             "remove_profile_photo",
+            "payout_method",
+            "payout_updated_at",
+            "payout_details",
             "years_experience",
             "credentials_summary",
             "is_accepting_bookings",
@@ -313,11 +414,12 @@ class ProviderRegisterSerializer(BaseRegisterSerializer):
         base_locations = validated_data.pop("base_locations", [])
         supported_languages = validated_data.pop("supported_languages", [])
         profile_photo = validated_data.pop("profile_photo")
+        profile_photo_blob, profile_photo_content_type = read_uploaded_photo_blob(profile_photo)
         years_experience = validated_data.pop("years_experience", 0)
         credentials_summary = validated_data.pop("credentials_summary", "")
 
         user = User.objects.create_user(role=User.Role.PROVIDER, **validated_data)
-        ProviderProfile.objects.create(
+        profile = ProviderProfile.objects.create(
             user=user,
             professional_name=professional_name,
             bio=bio,
@@ -328,6 +430,15 @@ class ProviderRegisterSerializer(BaseRegisterSerializer):
             years_experience=years_experience,
             credentials_summary=credentials_summary,
         )
+        if profile_photo_blob:
+            try:
+                upsert_provider_photo(
+                    provider_profile_id=profile.id,
+                    content=profile_photo_blob,
+                    content_type=profile_photo_content_type,
+                )
+            except Exception:  # pragma: no cover
+                pass
         return user
 
 

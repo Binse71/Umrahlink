@@ -15,7 +15,7 @@ export function resolveApiBaseUrl() {
 export type UserRole = "CUSTOMER" | "PROVIDER" | "ADMIN";
 export type ServiceType = "UMRAH_BADAL" | "ZIYARAH_GUIDE" | "UMRAH_ASSISTANT";
 export type CityScope = "MAKKAH" | "MADINAH";
-export type PaymentMethod = "CARD" | "APPLE_PAY" | "MPESA";
+export type PaymentMethod = "CARD" | "APPLE_PAY";
 
 export interface ApiUser {
   id: number;
@@ -93,6 +93,12 @@ export interface Booking {
   total_amount: string;
   payment_reference: string;
   cancellation_reason: string;
+  acceptance_deadline_at: string | null;
+  provider_completed_confirmed_at: string | null;
+  customer_completed_confirmed_at: string | null;
+  provider_completion_confirmed: boolean;
+  customer_completion_confirmed: boolean;
+  ready_for_escrow_release: boolean;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
@@ -107,26 +113,39 @@ export interface BookingStatusEvent {
   created_at: string;
 }
 
-export interface PesapalInitializeResponse {
+export interface PaymentWebhookEvent {
+  id: number;
+  event_type: "PAYMENT_SUCCEEDED" | "PAYMENT_FAILED" | "PAYMENT_REFUNDED";
+  external_reference: string;
+  payload: Record<string, unknown>;
+  processed: boolean;
+  received_at: string;
+  processed_at: string | null;
+}
+
+export interface StripeInitializeResponse {
   booking_id: number;
   merchant_reference: string;
   order_tracking_id: string;
+  checkout_session_id: string;
   redirect_url: string;
   payment_method: PaymentMethod;
-  provider: "PESAPAL";
+  provider: "STRIPE";
   webhook_url: string;
 }
 
-export interface PesapalVerifyResponse {
+export interface StripeVerifyResponse {
   detail: string;
   booking_id: number;
   merchant_reference: string;
   order_tracking_id: string;
+  checkout_session_id: string;
   payment_status: string;
+  session_status: string;
   event_type: string;
   escrow_status: string;
   booking_status: string;
-  provider: "PESAPAL";
+  provider: "STRIPE";
 }
 
 export interface BookingThread {
@@ -221,10 +240,53 @@ export interface AdminProviderProfile {
   profile_photo_url: string;
   years_experience: number;
   credentials_summary: string;
+  payout_method: "" | "SAUDI_BANK" | "MPESA" | "USDT";
+  payout_updated_at: string | null;
+  payout_details: Record<string, unknown>;
   is_accepting_bookings: boolean;
   verification_status: string;
   rating_average: string;
   total_reviews: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProviderPayoutProfile {
+  id: number;
+  provider_id: number;
+  provider_name: string;
+  method: "SAUDI_BANK" | "MPESA" | "USDT";
+  bank_account_name: string;
+  bank_name: string;
+  saudi_iban: string;
+  mpesa_full_name: string;
+  mpesa_phone: string;
+  usdt_network: "" | "TRC20" | "ERC20";
+  usdt_wallet_address: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PayoutLedger {
+  id: number;
+  provider: number;
+  provider_name: string;
+  booking: number;
+  booking_reference: string;
+  gross_amount: string;
+  platform_fee: string;
+  net_amount: string;
+  status: "PENDING" | "APPROVED" | "PAID" | "FAILED";
+  payout_method: "" | "SAUDI_BANK" | "MPESA" | "USDT";
+  payout_details_snapshot: Record<string, unknown>;
+  payout_date: string | null;
+  admin_note: string;
+  approved_by: number | null;
+  approved_by_name: string;
+  approved_at: string | null;
+  paid_by: number | null;
+  paid_by_name: string;
+  paid_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -268,6 +330,7 @@ export function getErrorMessage(error: unknown): string {
     const data = error.data as Record<string, unknown> | undefined;
     const detail = data?.detail;
     if (typeof detail === "string" && detail.length > 0) {
+      const normalized = detail.trim().toLowerCase();
       const lowered = detail.toLowerCase();
       if (
         lowered.includes("load failed") ||
@@ -276,7 +339,13 @@ export function getErrorMessage(error: unknown): string {
       ) {
         return `Cannot reach backend API. Make sure Django is running at ${resolveApiBaseUrl()}.`;
       }
+      if (normalized.includes("<!doctype html") || normalized.includes("<html")) {
+        return "Server error. Please try again in a moment.";
+      }
       return detail;
+    }
+    if (error.status >= 500) {
+      return "Server error. Please try again in a moment.";
     }
     if (data && typeof data === "object") {
       const firstEntry = Object.values(data)[0];
@@ -536,6 +605,10 @@ export function listBookingEvents(token: string, bookingId: number) {
   return request<BookingStatusEvent[]>(`/bookings/${bookingId}/events/`, { token });
 }
 
+export function listBookingPaymentEvents(token: string, bookingId: number) {
+  return request<PaymentWebhookEvent[]>(`/bookings/${bookingId}/payment-events/`, { token });
+}
+
 export function cancelBooking(token: string, bookingId: number, reason?: string) {
   return request<Booking>(`/bookings/${bookingId}/cancel/`, {
     method: "POST",
@@ -549,6 +622,14 @@ export function updateBookingStatus(token: string, bookingId: number, status: st
     method: "POST",
     token,
     body: { status, note: note ?? "" }
+  });
+}
+
+export function confirmBookingCompletion(token: string, bookingId: number) {
+  return request<Booking>(`/bookings/${bookingId}/confirm_completion/`, {
+    method: "POST",
+    token,
+    body: {},
   });
 }
 
@@ -761,7 +842,7 @@ export function simulatePaymentSucceeded(bookingId: number, paymentReference?: s
   });
 }
 
-export function initializePesapalPayment(
+export function initializeStripePayment(
   token: string,
   bookingId: number,
   payload: {
@@ -769,22 +850,24 @@ export function initializePesapalPayment(
     callback_url?: string;
   }
 ) {
-  return request<PesapalInitializeResponse>(`/bookings/${bookingId}/pesapal_initialize/`, {
+  return request<StripeInitializeResponse>(`/bookings/${bookingId}/stripe_initialize/`, {
     method: "POST",
     token,
     body: payload,
   });
 }
 
-export function verifyPesapalPayment(
+export function verifyStripePayment(
   token: string,
   bookingId: number,
   payload: {
+    checkout_session_id?: string;
     order_tracking_id?: string;
     merchant_reference?: string;
+    booking_reference?: string;
   } = {}
 ) {
-  return request<PesapalVerifyResponse>(`/bookings/${bookingId}/pesapal_verify/`, {
+  return request<StripeVerifyResponse>(`/bookings/${bookingId}/stripe_verify/`, {
     method: "POST",
     token,
     body: payload,
@@ -823,6 +906,73 @@ export function banAdminProvider(token: string, providerId: number) {
 export function listAdminUsers(token: string, filters: { role?: UserRole; banned?: 0 | 1 } = {}) {
   const query = toQueryString(filters);
   return request<PaginatedResponse<ApiUser>>(`/auth/admin/users/${query}`, { token });
+}
+
+export function getMyPayoutProfile(token: string) {
+  return request<ProviderPayoutProfile>("/payouts/profile/", { token });
+}
+
+export function upsertMyPayoutProfile(
+  token: string,
+  payload: Partial<{
+    method: "SAUDI_BANK" | "MPESA" | "USDT";
+    bank_account_name: string;
+    bank_name: string;
+    saudi_iban: string;
+    mpesa_full_name: string;
+    mpesa_phone: string;
+    usdt_network: "TRC20" | "ERC20";
+    usdt_wallet_address: string;
+  }>
+) {
+  return request<ProviderPayoutProfile>("/payouts/profile/", {
+    method: "PATCH",
+    token,
+    body: payload,
+  });
+}
+
+export function listPayoutLedger(
+  token: string,
+  filters: {
+    status?: "PENDING" | "APPROVED" | "PAID" | "FAILED";
+    provider?: number;
+  } = {}
+) {
+  const query = toQueryString(filters);
+  return request<PaginatedResponse<PayoutLedger>>(`/payouts/ledger/${query}`, { token });
+}
+
+export function approvePayout(token: string, payoutId: number, admin_note?: string) {
+  return request<PayoutLedger>(`/payouts/ledger/${payoutId}/approve/`, {
+    method: "POST",
+    token,
+    body: { admin_note: admin_note ?? "" },
+  });
+}
+
+export function markPayoutPaid(token: string, payoutId: number, admin_note?: string) {
+  return request<PayoutLedger>(`/payouts/ledger/${payoutId}/mark_paid/`, {
+    method: "POST",
+    token,
+    body: { admin_note: admin_note ?? "" },
+  });
+}
+
+export function markPayoutFailed(token: string, payoutId: number, admin_note?: string) {
+  return request<PayoutLedger>(`/payouts/ledger/${payoutId}/mark_failed/`, {
+    method: "POST",
+    token,
+    body: { admin_note: admin_note ?? "" },
+  });
+}
+
+export function syncPayoutsFromBookings(token: string, booking_ids: number[]) {
+  return request<{ detail: string; synced: number }>("/payouts/ledger/sync_from_bookings/", {
+    method: "POST",
+    token,
+    body: { booking_ids },
+  });
 }
 
 export function banAdminUser(token: string, userId: number) {

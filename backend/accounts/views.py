@@ -1,5 +1,6 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate, login, logout
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework import mixins, status, viewsets
@@ -31,6 +32,27 @@ def auth_payload(user):
     }
 
 
+def notify_admins_about_registration(*, registered_user: User):
+    admin_users = User.objects.filter(
+        Q(is_superuser=True) | Q(is_staff=True) | Q(role=User.Role.ADMIN),
+        is_active=True,
+    ).exclude(id=registered_user.id)
+
+    role_label = "provider" if registered_user.role == User.Role.PROVIDER else "customer"
+    for admin_user in admin_users:
+        notify_user(
+            user=admin_user,
+            title="Someone registered",
+            body=f"New {role_label} registered: {registered_user.username} ({registered_user.email}).",
+            metadata={
+                "source": "registration_alert",
+                "registered_user_id": registered_user.id,
+                "registered_user_role": registered_user.role,
+                "registered_user_email": registered_user.email,
+            },
+        )
+
+
 class RegisterCustomerView(APIView):
     permission_classes = [AllowAny]
 
@@ -38,6 +60,13 @@ class RegisterCustomerView(APIView):
         serializer = CustomerRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        notify_user(
+            user=user,
+            title="Welcome to Umrah Link",
+            body="Your customer account is ready. You can now explore services and book with confidence.",
+            metadata={"source": "register_customer", "role": user.role},
+        )
+        notify_admins_about_registration(registered_user=user)
         return Response(auth_payload(user), status=status.HTTP_201_CREATED)
 
 
@@ -48,6 +77,13 @@ class RegisterProviderView(APIView):
         serializer = ProviderRegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
+        notify_user(
+            user=user,
+            title="Welcome to Umrah Link",
+            body="Your provider account has been created and submitted for review. We will notify you after verification.",
+            metadata={"source": "register_provider", "role": user.role},
+        )
+        notify_admins_about_registration(registered_user=user)
         return Response(auth_payload(user), status=status.HTTP_201_CREATED)
 
 
@@ -140,7 +176,7 @@ class ProviderModerationViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin
     serializer_class = ProviderProfileSerializer
 
     def get_queryset(self):
-        queryset = ProviderProfile.objects.select_related("user").all()
+        queryset = ProviderProfile.objects.select_related("user", "payout_profile").all()
         status_filter = self.request.query_params.get("status")
         if status_filter:
             queryset = queryset.filter(verification_status=status_filter.upper())

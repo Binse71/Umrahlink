@@ -10,7 +10,9 @@ import {
   ApiUser,
   Booking,
   Dispute,
+  PayoutLedger,
   adminRefundBooking,
+  approvePayout,
   approveAdminProvider,
   banAdminProvider,
   banAdminUser,
@@ -21,6 +23,9 @@ import {
   listAdminUsers,
   listDisputes,
   listMyBookings,
+  listPayoutLedger,
+  markPayoutFailed,
+  markPayoutPaid,
   logout,
   moveDisputeToReview,
   rejectAdminProvider,
@@ -34,6 +39,16 @@ function pretty(value: string) {
   return value.replaceAll("_", " ");
 }
 
+type DisputeDecisionType = "APPROVE_REFUND" | "APPROVE_RELEASE" | "PARTIAL_REMEDY" | "REJECT_CLAIM";
+
+interface DisputeDecisionDialogState {
+  disputeId: number;
+  decision: DisputeDecisionType;
+  requireNote: boolean;
+  title: string;
+  successMessage: string;
+}
+
 export default function AdminPanelPage() {
   const router = useRouter();
   const { locale } = useLanguage();
@@ -43,6 +58,7 @@ export default function AdminPanelPage() {
   const [users, setUsers] = useState<ApiUser[]>([]);
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [payouts, setPayouts] = useState<PayoutLedger[]>([]);
 
   const [providerStatusFilter, setProviderStatusFilter] = useState("PENDING");
   const [userRoleFilter, setUserRoleFilter] = useState<"" | "CUSTOMER" | "PROVIDER" | "ADMIN">("");
@@ -52,6 +68,8 @@ export default function AdminPanelPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [decisionDialog, setDecisionDialog] = useState<DisputeDecisionDialogState | null>(null);
+  const [decisionNote, setDecisionNote] = useState("");
 
   async function loadData() {
     setLoading(true);
@@ -71,20 +89,22 @@ export default function AdminPanelPage() {
       }
       setStoredUser(me);
 
-      const [providerResponse, usersResponse, bookingsResponse, disputesResponse] = await Promise.all([
+      const [providerResponse, usersResponse, bookingsResponse, disputesResponse, payoutResponse] = await Promise.all([
         listAdminProviders(token, providerStatusFilter || undefined),
         listAdminUsers(token, {
           role: userRoleFilter || undefined,
           banned: userBannedFilter === "" ? undefined : userBannedFilter
         }),
         listMyBookings(token),
-        listDisputes(token)
+        listDisputes(token),
+        listPayoutLedger(token)
       ]);
 
       setProviders(providerResponse.results);
       setUsers(usersResponse.results);
       setBookings(bookingsResponse.results);
       setDisputes(disputesResponse.results);
+      setPayouts(payoutResponse.results);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -123,6 +143,49 @@ export default function AdminPanelPage() {
     }
   }
 
+  const decisionActionKey = decisionDialog
+    ? `dispute-decision-${decisionDialog.disputeId}-${decisionDialog.decision}`
+    : null;
+
+  function openDecisionDialog(config: DisputeDecisionDialogState) {
+    setDecisionDialog(config);
+    setDecisionNote("");
+    setError(null);
+  }
+
+  function closeDecisionDialog() {
+    if (decisionActionKey && actionLoading === decisionActionKey) {
+      return;
+    }
+    setDecisionDialog(null);
+    setDecisionNote("");
+  }
+
+  async function submitDecisionDialog() {
+    if (!decisionDialog || !decisionActionKey) {
+      return;
+    }
+    const trimmedNote = decisionNote.trim();
+    if (decisionDialog.requireNote && !trimmedNote) {
+      setError(t("Admin note is required for this decision.", "مطلوب ملاحظة من الإدارة لهذا القرار."));
+      return;
+    }
+
+    await runAction(decisionActionKey, async () => {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
+      }
+      await decideDispute(token, decisionDialog.disputeId, {
+        decision: decisionDialog.decision,
+        note: trimmedNote || undefined
+      });
+      setMessage(decisionDialog.successMessage);
+      setDecisionDialog(null);
+      setDecisionNote("");
+    });
+  }
+
   return (
     <div className="app-shell">
       <AppTopNav
@@ -155,6 +218,10 @@ export default function AdminPanelPage() {
             <article>
               <strong>{disputes.filter((item) => item.status !== "RESOLVED").length}</strong>
               <span>{t("Open Disputes", "النزاعات المفتوحة")}</span>
+            </article>
+            <article>
+              <strong>{payouts.filter((item) => item.status !== "PAID").length}</strong>
+              <span>{t("Open Payouts", "سحوبات مفتوحة")}</span>
             </article>
           </div>
         </section>
@@ -207,6 +274,14 @@ export default function AdminPanelPage() {
                         <span>{t("City", "المدينة")}: {provider.city || "-"}</span>
                         <span>{t("Years", "سنوات")}: {provider.years_experience}</span>
                       </div>
+                      <p className="page-sub mini">
+                        {t("Payout Method", "طريقة السحب")}: {provider.payout_method ? pretty(provider.payout_method) : t("Not set", "غير محدد")}
+                      </p>
+                      {provider.payout_method && Object.keys(provider.payout_details || {}).length > 0 ? (
+                        <p className="page-sub mini">
+                          {t("Payout Details", "تفاصيل السحب")}: {JSON.stringify(provider.payout_details)}
+                        </p>
+                      ) : null}
                       <div className="card-actions">
                         {provider.verification_status !== "APPROVED" ? (
                           <button
@@ -370,6 +445,14 @@ export default function AdminPanelPage() {
                         <span className={`status-pill status-${booking.escrow_status.toLowerCase()}`}>{pretty(booking.escrow_status)}</span>
                       </div>
                       <p className="page-sub mini">{booking.total_amount} {booking.service_currency}</p>
+                      <p className="page-sub mini">
+                        {t("Provider completion", "تأكيد المزود")}:{" "}
+                        {booking.provider_completed_confirmed_at ? t("Confirmed", "مؤكد") : t("Pending", "قيد الانتظار")}
+                      </p>
+                      <p className="page-sub mini">
+                        {t("Customer completion", "تأكيد العميل")}:{" "}
+                        {booking.customer_completed_confirmed_at ? t("Confirmed", "مؤكد") : t("Pending", "قيد الانتظار")}
+                      </p>
                       <div className="card-actions">
                         <button
                           className="btn btn-outline"
@@ -386,7 +469,8 @@ export default function AdminPanelPage() {
                           disabled={
                             actionLoading === `booking-release-${booking.id}` ||
                             booking.status !== "COMPLETED" ||
-                            !["PAID", "HELD"].includes(booking.escrow_status)
+                            !["PAID", "HELD"].includes(booking.escrow_status) ||
+                            !booking.ready_for_escrow_release
                           }
                         >
                           {t("Release Escrow", "إفراج الضمان")}
@@ -406,6 +490,99 @@ export default function AdminPanelPage() {
                           disabled={actionLoading === `booking-refund-${booking.id}` || booking.escrow_status === "REFUNDED"}
                         >
                           {t("Issue Refund", "إصدار استرداد")}
+                        </button>
+                      </div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="panel">
+              <h2 className="section-title">{t("Provider Payout Queue", "طابور سحوبات المزودين")}</h2>
+              <div className="cards-grid">
+                {payouts.length === 0 ? (
+                  <article className="panel compact-card">{t("No payouts found.", "لا توجد سجلات سحب.")}</article>
+                ) : (
+                  payouts.slice(0, 30).map((payout) => (
+                    <article key={payout.id} className="panel compact-card">
+                      <h3 className="section-title">{t("Payout", "سحب")} #{payout.id}</h3>
+                      <p className="page-sub mini">{t("Provider", "المزود")}: {payout.provider_name}</p>
+                      <p className="page-sub mini">{t("Booking Ref", "مرجع الحجز")}: {payout.booking_reference}</p>
+                      <div className="meta-row">
+                        <span className={`status-pill status-${payout.status.toLowerCase()}`}>{pretty(payout.status)}</span>
+                        <span className="status-pill">{payout.payout_method ? pretty(payout.payout_method) : t("Not set", "غير محدد")}</span>
+                      </div>
+                      <p className="page-sub mini">{t("Gross", "الإجمالي")}: {payout.gross_amount}</p>
+                      <p className="page-sub mini">{t("Platform Fee", "رسوم المنصة")}: {payout.platform_fee}</p>
+                      <p className="page-sub mini"><strong>{t("Net", "الصافي")}: {payout.net_amount}</strong></p>
+                      {Object.keys(payout.payout_details_snapshot || {}).length > 0 ? (
+                        <p className="page-sub mini">
+                          {t("Destination", "وجهة الدفع")}: {JSON.stringify(payout.payout_details_snapshot)}
+                        </p>
+                      ) : null}
+                      {payout.approved_at ? (
+                        <p className="page-sub mini">
+                          {t("Approved", "تمت الموافقة")}: {new Date(payout.approved_at).toLocaleString()}
+                        </p>
+                      ) : null}
+                      {payout.paid_at ? (
+                        <p className="page-sub mini">
+                          {t("Paid", "تم الدفع")}: {new Date(payout.paid_at).toLocaleString()}
+                        </p>
+                      ) : null}
+                      {payout.admin_note ? <p className="page-sub mini">{t("Note", "ملاحظة")}: {payout.admin_note}</p> : null}
+                      <div className="card-actions">
+                        <button
+                          className="btn btn-outline"
+                          onClick={() =>
+                            void runAction(`payout-approve-${payout.id}`, async () => {
+                              const token = getAuthToken();
+                              if (!token) {
+                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
+                              }
+                              const note = window.prompt(t("Approval note (optional):", "ملاحظة الموافقة (اختيارية):"), "") ?? "";
+                              await approvePayout(token, payout.id, note);
+                              setMessage(t("Payout approved.", "تمت الموافقة على السحب."));
+                            })
+                          }
+                          disabled={actionLoading === `payout-approve-${payout.id}` || !["PENDING", "FAILED"].includes(payout.status)}
+                        >
+                          {t("Approve", "موافقة")}
+                        </button>
+                        <button
+                          className="btn btn-primary"
+                          onClick={() =>
+                            void runAction(`payout-paid-${payout.id}`, async () => {
+                              const token = getAuthToken();
+                              if (!token) {
+                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
+                              }
+                              const note = window.prompt(t("Payout note (optional):", "ملاحظة الدفع (اختيارية):"), "") ?? "";
+                              await markPayoutPaid(token, payout.id, note);
+                              setMessage(t("Payout marked as paid.", "تم تعليم السحب كمدفوع."));
+                            })
+                          }
+                          disabled={actionLoading === `payout-paid-${payout.id}` || payout.status !== "APPROVED"}
+                        >
+                          {t("Mark Paid", "تعليم كمدفوع")}
+                        </button>
+                        <button
+                          className="btn btn-ghost"
+                          onClick={() =>
+                            void runAction(`payout-failed-${payout.id}`, async () => {
+                              const token = getAuthToken();
+                              if (!token) {
+                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
+                              }
+                              const note = window.prompt(t("Failure note:", "ملاحظة الفشل:"), "") ?? "";
+                              await markPayoutFailed(token, payout.id, note);
+                              setMessage(t("Payout marked as failed.", "تم تعليم السحب كفاشل."));
+                            })
+                          }
+                          disabled={actionLoading === `payout-failed-${payout.id}` || payout.status === "PAID"}
+                        >
+                          {t("Mark Failed", "تعليم كفاشل")}
                         </button>
                       </div>
                     </article>
@@ -449,68 +626,60 @@ export default function AdminPanelPage() {
                         <button
                           className="btn btn-primary"
                           onClick={() =>
-                            void runAction(`dispute-refund-${dispute.id}`, async () => {
-                              const token = getAuthToken();
-                              if (!token) {
-                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
-                              }
-                              const note = window.prompt(t("Optional admin note:", "ملاحظة الإدارة (اختياري):"), "") ?? "";
-                              await decideDispute(token, dispute.id, { decision: "APPROVE_REFUND", note });
-                              setMessage(t("Dispute decided: refund.", "تم إصدار القرار: استرداد."));
+                            openDecisionDialog({
+                              disputeId: dispute.id,
+                              decision: "APPROVE_REFUND",
+                              requireNote: false,
+                              title: t("Approve refund", "اعتماد الاسترداد"),
+                              successMessage: t("Dispute decided: refund.", "تم إصدار القرار: استرداد.")
                             })
                           }
-                          disabled={actionLoading === `dispute-refund-${dispute.id}` || dispute.status === "RESOLVED"}
+                          disabled={actionLoading === `dispute-decision-${dispute.id}-APPROVE_REFUND` || dispute.status === "RESOLVED"}
                         >
                           {t("Approve Refund", "اعتماد الاسترداد")}
                         </button>
                         <button
                           className="btn btn-ghost"
                           onClick={() =>
-                            void runAction(`dispute-release-${dispute.id}`, async () => {
-                              const token = getAuthToken();
-                              if (!token) {
-                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
-                              }
-                              const note = window.prompt(t("Optional admin note:", "ملاحظة الإدارة (اختياري):"), "") ?? "";
-                              await decideDispute(token, dispute.id, { decision: "APPROVE_RELEASE", note });
-                              setMessage(t("Dispute decided: release escrow.", "تم إصدار القرار: إفراج الضمان."));
+                            openDecisionDialog({
+                              disputeId: dispute.id,
+                              decision: "APPROVE_RELEASE",
+                              requireNote: false,
+                              title: t("Approve release", "اعتماد الإفراج"),
+                              successMessage: t("Dispute decided: release escrow.", "تم إصدار القرار: إفراج الضمان.")
                             })
                           }
-                          disabled={actionLoading === `dispute-release-${dispute.id}` || dispute.status === "RESOLVED"}
+                          disabled={actionLoading === `dispute-decision-${dispute.id}-APPROVE_RELEASE` || dispute.status === "RESOLVED"}
                         >
                           {t("Approve Release", "اعتماد الإفراج")}
                         </button>
                         <button
                           className="btn btn-outline"
                           onClick={() =>
-                            void runAction(`dispute-partial-${dispute.id}`, async () => {
-                              const token = getAuthToken();
-                              if (!token) {
-                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
-                              }
-                              const note = window.prompt(t("Admin note required for partial remedy:", "ملاحظة الإدارة للحل الجزئي:"), "") ?? "";
-                              await decideDispute(token, dispute.id, { decision: "PARTIAL_REMEDY", note });
-                              setMessage(t("Dispute decided: partial remedy.", "تم إصدار القرار: حل جزئي."));
+                            openDecisionDialog({
+                              disputeId: dispute.id,
+                              decision: "PARTIAL_REMEDY",
+                              requireNote: true,
+                              title: t("Partial remedy decision", "قرار الحل الجزئي"),
+                              successMessage: t("Dispute decided: partial remedy.", "تم إصدار القرار: حل جزئي.")
                             })
                           }
-                          disabled={actionLoading === `dispute-partial-${dispute.id}` || dispute.status === "RESOLVED"}
+                          disabled={actionLoading === `dispute-decision-${dispute.id}-PARTIAL_REMEDY` || dispute.status === "RESOLVED"}
                         >
                           {t("Partial Remedy", "حل جزئي")}
                         </button>
                         <button
                           className="btn btn-ghost"
                           onClick={() =>
-                            void runAction(`dispute-reject-${dispute.id}`, async () => {
-                              const token = getAuthToken();
-                              if (!token) {
-                                throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
-                              }
-                              const note = window.prompt(t("Optional rejection note:", "ملاحظة الرفض (اختياري):"), "") ?? "";
-                              await decideDispute(token, dispute.id, { decision: "REJECT_CLAIM", note });
-                              setMessage(t("Dispute claim rejected.", "تم رفض مطالبة النزاع."));
+                            openDecisionDialog({
+                              disputeId: dispute.id,
+                              decision: "REJECT_CLAIM",
+                              requireNote: false,
+                              title: t("Reject dispute claim", "رفض مطالبة النزاع"),
+                              successMessage: t("Dispute claim rejected.", "تم رفض مطالبة النزاع.")
                             })
                           }
-                          disabled={actionLoading === `dispute-reject-${dispute.id}` || dispute.status === "RESOLVED"}
+                          disabled={actionLoading === `dispute-decision-${dispute.id}-REJECT_CLAIM` || dispute.status === "RESOLVED"}
                         >
                           {t("Reject Claim", "رفض المطالبة")}
                         </button>
@@ -523,6 +692,46 @@ export default function AdminPanelPage() {
           </>
         ) : null}
       </main>
+
+      {decisionDialog ? (
+        <div className="admin-modal-overlay" role="presentation">
+          <section className="admin-modal panel" role="dialog" aria-modal="true" aria-labelledby="dispute-decision-title">
+            <h3 id="dispute-decision-title" className="section-title">
+              {decisionDialog.title}
+            </h3>
+            <p className="page-sub mini">
+              {t("Dispute", "النزاع")} #{decisionDialog.disputeId}
+            </p>
+            <label className="field">
+              {decisionDialog.requireNote
+                ? t("Admin Note (required)", "ملاحظة الإدارة (مطلوبة)")
+                : t("Admin Note (optional)", "ملاحظة الإدارة (اختيارية)")}
+              <textarea
+                className="textarea"
+                rows={4}
+                value={decisionNote}
+                onChange={(event) => setDecisionNote(event.target.value)}
+                placeholder={t("Write the internal decision note.", "اكتب ملاحظة قرار الإدارة.")}
+              />
+            </label>
+            <div className="admin-modal-actions">
+              <button className="btn btn-ghost" onClick={closeDecisionDialog} disabled={actionLoading === decisionActionKey}>
+                {t("Cancel", "إلغاء")}
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => void submitDecisionDialog()}
+                disabled={
+                  actionLoading === decisionActionKey ||
+                  (decisionDialog.requireNote && !decisionNote.trim())
+                }
+              >
+                {actionLoading === decisionActionKey ? t("Saving...", "جارٍ الحفظ...") : t("Confirm Decision", "تأكيد القرار")}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

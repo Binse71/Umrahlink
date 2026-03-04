@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from accounts.models import User
 from bookings.models import Booking
 from notifications.services import notify_booking_participants
+from payouts.services import sync_payout_ledger_for_booking
 
 from .models import Dispute, DisputeEvidence
 from .permissions import IsDisputeParticipantOrAdmin
@@ -109,11 +110,29 @@ class DisputeViewSet(viewsets.ModelViewSet):
             booking.escrow_status = Booking.EscrowStatus.REFUNDED
             if booking.status != Booking.Status.COMPLETED:
                 booking.status = Booking.Status.CANCELLED
-            booking.save(update_fields=["escrow_status", "status", "updated_at"])
+            booking.acceptance_deadline_at = None
+            booking.provider_completed_confirmed_at = None
+            booking.customer_completed_confirmed_at = None
+            booking.save(
+                update_fields=[
+                    "escrow_status",
+                    "status",
+                    "acceptance_deadline_at",
+                    "provider_completed_confirmed_at",
+                    "customer_completed_confirmed_at",
+                    "updated_at",
+                ]
+            )
+            sync_payout_ledger_for_booking(booking=booking, actor=request.user)
 
         if decision == Dispute.AdminDecision.APPROVE_RELEASE:
+            if booking.status != Booking.Status.COMPLETED:
+                raise ValidationError("Escrow release requires a completed booking.")
+            if not (booking.provider_completed_confirmed_at and booking.customer_completed_confirmed_at):
+                raise ValidationError("Escrow release requires both provider and customer confirmations.")
             booking.escrow_status = Booking.EscrowStatus.RELEASED
             booking.save(update_fields=["escrow_status", "updated_at"])
+            sync_payout_ledger_for_booking(booking=booking, actor=request.user)
 
         dispute.mark_resolved(decision=decision, admin_user=request.user, note=note)
         notify_booking_participants(

@@ -520,6 +520,12 @@ export default function ProviderDashboardPage() {
         {!loading && activeTab === "PAYOUT_HISTORY" ? (
           <section className="panel provider-section-card fade-up" style={{ animationDelay: "0.24s" }}>
             <h2 className="section-title">{t("Payout History", "سجل السحوبات")}</h2>
+            <p className="page-sub mini">
+              {t(
+                "Anti-fraud policy: provider payouts are processed within 24-48 hours after admin approval.",
+                "سياسة مكافحة الاحتيال: تتم معالجة سحوبات المزود خلال 24-48 ساعة بعد موافقة الإدارة."
+              )}
+            </p>
             {payoutHistory.length === 0 ? (
               <p className="page-sub">{t("No payout records yet.", "لا توجد سجلات سحب بعد.")}</p>
             ) : (
@@ -535,6 +541,24 @@ export default function ProviderDashboardPage() {
                     <p className="page-sub mini">{t("Gross", "الإجمالي")}: {payout.gross_amount}</p>
                     <p className="page-sub mini">{t("Platform Fee", "رسوم المنصة")}: {payout.platform_fee}</p>
                     <p className="page-sub mini"><strong>{t("Net", "الصافي")}: {payout.net_amount}</strong></p>
+                    {payout.payout_window_start_at ? (
+                      <p className="page-sub mini">
+                        {t("Payout Window", "نافذة السحب")}:{" "}
+                        {new Date(payout.payout_window_start_at).toLocaleString()} -{" "}
+                        {payout.payout_window_end_at ? new Date(payout.payout_window_end_at).toLocaleString() : "-"}
+                      </p>
+                    ) : null}
+                    {payout.status === "APPROVED" ? (
+                      <p className="page-sub mini">
+                        {payout.payout_window_state === "EARLY_HOLD"
+                          ? t("Status: in anti-fraud hold (waiting for 24h).", "الحالة: تحت فترة حماية الاحتيال (انتظار 24 ساعة).")
+                          : payout.payout_window_state === "IN_WINDOW"
+                            ? t("Status: in 24-48h payout window.", "الحالة: ضمن نافذة السحب 24-48 ساعة.")
+                            : payout.payout_window_state === "OVERDUE"
+                              ? t("Status: payout is overdue beyond 48h window.", "الحالة: السحب متأخر بعد نافذة 48 ساعة.")
+                              : ""}
+                      </p>
+                    ) : null}
                     {payout.payout_date ? <p className="page-sub mini">{t("Payout Date", "تاريخ السحب")}: {new Date(payout.payout_date).toLocaleString()}</p> : null}
                     {payout.admin_note ? <p className="page-sub mini">{t("Admin Note", "ملاحظة الإدارة")}: {payout.admin_note}</p> : null}
                   </article>

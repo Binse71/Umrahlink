@@ -138,6 +138,14 @@ class PayoutLedgerViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, view
 
         if payout.status != PayoutLedger.Status.APPROVED:
             raise ValidationError("Only approved payouts can be marked as paid.")
+        if not payout.approved_at:
+            raise ValidationError("Payout must have an approval timestamp before marking as paid.")
+
+        earliest_payout_at = payout.approved_at + timezone.timedelta(hours=24)
+        if timezone.now() < earliest_payout_at:
+            raise ValidationError(
+                "Payout anti-fraud hold is active. Mark paid only after 24 hours from approval."
+            )
 
         payout.status = PayoutLedger.Status.PAID
         payout.admin_note = note

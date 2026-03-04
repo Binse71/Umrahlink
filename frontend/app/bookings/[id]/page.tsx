@@ -9,20 +9,23 @@ import { useLanguage } from "@/components/LanguageProvider";
 import {
   Booking,
   BookingStatusEvent,
+  PaymentWebhookEvent,
   PaymentMethod,
   Review,
   cancelBooking,
+  confirmBookingCompletion,
   createReview,
   createThread,
   getBooking,
   getErrorMessage,
   getMe,
-  initializePesapalPayment,
+  initializeStripePayment,
+  listBookingPaymentEvents,
   listBookingEvents,
   listReviews,
   logout,
   updateBookingStatus,
-  verifyPesapalPayment,
+  verifyStripePayment,
 } from "@/lib/api";
 import { clearAuth, getAuthToken, setStoredUser } from "@/lib/auth-client";
 import { withLocale } from "@/lib/i18n";
@@ -30,7 +33,7 @@ import { withLocale } from "@/lib/i18n";
 const STATUS_TRANSITIONS: Record<string, string[]> = {
   REQUESTED: ["ACCEPTED", "REJECTED", "CANCELLED"],
   ACCEPTED: ["IN_PROGRESS", "CANCELLED"],
-  IN_PROGRESS: ["COMPLETED", "CANCELLED"]
+  IN_PROGRESS: ["CANCELLED"]
 };
 
 const FINAL_STATUSES = new Set(["COMPLETED", "CANCELLED", "REJECTED"]);
@@ -38,6 +41,13 @@ const FINAL_STATUSES = new Set(["COMPLETED", "CANCELLED", "REJECTED"]);
 function pretty(value: string) {
   return value.replaceAll("_", " ");
 }
+
+type LifecycleStep = {
+  id: string;
+  label: string;
+  done: boolean;
+  at?: string | null;
+};
 
 export default function BookingDetailsPage() {
   const params = useParams<{ id: string }>();
@@ -51,6 +61,7 @@ export default function BookingDetailsPage() {
   const [role, setRole] = useState<"CUSTOMER" | "PROVIDER" | "ADMIN" | null>(null);
   const [booking, setBooking] = useState<Booking | null>(null);
   const [events, setEvents] = useState<BookingStatusEvent[]>([]);
+  const [paymentEvents, setPaymentEvents] = useState<PaymentWebhookEvent[]>([]);
   const [reviews, setReviews] = useState<Review[]>([]);
 
   const [cancelReason, setCancelReason] = useState("");
@@ -78,10 +89,11 @@ export default function BookingDetailsPage() {
         return;
       }
 
-      const [me, bookingData, eventData, reviewData] = await Promise.all([
+      const [me, bookingData, eventData, paymentEventData, reviewData] = await Promise.all([
         getMe(token),
         getBooking(token, bookingId),
         listBookingEvents(token, bookingId),
+        listBookingPaymentEvents(token, bookingId),
         listReviews({ booking: bookingId })
       ]);
 
@@ -89,6 +101,7 @@ export default function BookingDetailsPage() {
       setRole(me.role);
       setBooking(bookingData);
       setEvents(eventData);
+      setPaymentEvents(paymentEventData);
       setReviews(reviewData.results);
     } catch (err) {
       setError(getErrorMessage(err));
@@ -165,6 +178,46 @@ export default function BookingDetailsPage() {
     }
   }
 
+  async function handleConfirmCompletion() {
+    if (!booking) {
+      return;
+    }
+
+    setActionLoading("confirm-completion");
+    setError(null);
+    setMessage(null);
+
+    try {
+      const token = getAuthToken();
+      if (!token) {
+        throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
+      }
+
+      const updated = await confirmBookingCompletion(token, booking.id);
+      const bothConfirmed = updated.provider_completed_confirmed_at && updated.customer_completed_confirmed_at;
+      if (bothConfirmed) {
+        setMessage(
+          t(
+            "Both confirmations received. Booking is completed and ready for admin escrow release.",
+            "تم تسجيل تأكيد الطرفين. الحجز مكتمل وجاهز لإفراج الإدارة عن الضمان."
+          )
+        );
+      } else {
+        setMessage(
+          t(
+            "Your completion confirmation has been recorded. Waiting for the other party.",
+            "تم تسجيل تأكيد الإكمال الخاص بك. بانتظار تأكيد الطرف الآخر."
+          )
+        );
+      }
+      await loadBookingData();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
   async function handleOpenChat() {
     if (!booking) {
       return;
@@ -226,7 +279,7 @@ export default function BookingDetailsPage() {
     }
   }
 
-  async function handleStartPesapalPayment(methodOverride?: PaymentMethod) {
+  async function handleStartStripePayment(methodOverride?: PaymentMethod) {
     if (!booking) {
       return;
     }
@@ -244,7 +297,7 @@ export default function BookingDetailsPage() {
         throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
       }
 
-      const response = await initializePesapalPayment(token, booking.id, {
+      const response = await initializeStripePayment(token, booking.id, {
         payment_method: methodToUse
       });
 
@@ -275,9 +328,12 @@ export default function BookingDetailsPage() {
         throw new Error(t("Please sign in first.", "يرجى تسجيل الدخول أولاً."));
       }
 
-      const response = await verifyPesapalPayment(token, booking.id, {
-        order_tracking_id: orderTrackingId || booking.payment_reference,
-        merchant_reference: merchantReference || booking.reference
+      const sessionId = orderTrackingId || booking.payment_reference;
+      const response = await verifyStripePayment(token, booking.id, {
+        checkout_session_id: sessionId,
+        order_tracking_id: sessionId,
+        merchant_reference: merchantReference || booking.reference,
+        booking_reference: booking.reference,
       });
 
       if (response.event_type === "PENDING") {
@@ -332,21 +388,105 @@ export default function BookingDetailsPage() {
     return escrowReady && notCancelled;
   }, [booking]);
 
-  const canSimulatePayment = useMemo(() => {
+  const canInitiatePayment = useMemo(() => {
     if (!booking || role !== "CUSTOMER") {
       return false;
     }
-    if (booking.status === "CANCELLED" || booking.status === "REJECTED") {
+    if (["CANCELLED", "REJECTED", "COMPLETED"].includes(booking.status)) {
       return false;
     }
     return booking.escrow_status === "UNPAID" || booking.escrow_status === "FAILED";
   }, [booking, role]);
 
+  const canConfirmCompletion = useMemo(() => {
+    if (!booking || !role) {
+      return false;
+    }
+    if (!["PAID", "HELD", "RELEASED"].includes(booking.escrow_status)) {
+      return false;
+    }
+    if (["CANCELLED", "REJECTED"].includes(booking.status) || booking.status === "REQUESTED") {
+      return false;
+    }
+    if (role === "CUSTOMER") {
+      return !booking.customer_completed_confirmed_at;
+    }
+    if (role === "PROVIDER") {
+      return !booking.provider_completed_confirmed_at;
+    }
+    return false;
+  }, [booking, role]);
+
+  const needsOtherPartyConfirmation = useMemo(() => {
+    if (!booking || !role) {
+      return false;
+    }
+    if (role === "CUSTOMER") {
+      return Boolean(booking.customer_completed_confirmed_at) && !booking.provider_completed_confirmed_at;
+    }
+    if (role === "PROVIDER") {
+      return Boolean(booking.provider_completed_confirmed_at) && !booking.customer_completed_confirmed_at;
+    }
+    return false;
+  }, [booking, role]);
+
+  const lifecycleSteps: LifecycleStep[] = (() => {
+    if (!booking) {
+      return [];
+    }
+
+    const paymentDone = ["PAID", "HELD", "RELEASED", "REFUNDED"].includes(booking.escrow_status);
+    const acceptedDone = ["ACCEPTED", "IN_PROGRESS", "COMPLETED"].includes(booking.status);
+    const inProgressDone = ["IN_PROGRESS", "COMPLETED"].includes(booking.status);
+    const completedDone = booking.status === "COMPLETED";
+    const escrowReleasedDone = booking.escrow_status === "RELEASED";
+
+    return [
+      {
+        id: "requested",
+        label: t("Booking requested", "تم إرسال طلب الحجز"),
+        done: true,
+        at: booking.created_at,
+      },
+      {
+        id: "paid",
+        label: t("Payment held in escrow", "تم حجز الدفع في الضمان"),
+        done: paymentDone,
+      },
+      {
+        id: "accepted",
+        label: t("Provider accepted booking", "وافق المزود على الحجز"),
+        done: acceptedDone,
+      },
+      {
+        id: "in_progress",
+        label: t("Service in progress", "الخدمة قيد التنفيذ"),
+        done: inProgressDone,
+      },
+      {
+        id: "completed",
+        label: t("Both parties confirmed completion", "أكد الطرفان اكتمال الخدمة"),
+        done: completedDone && Boolean(booking.provider_completed_confirmed_at && booking.customer_completed_confirmed_at),
+        at: booking.completed_at,
+      },
+      {
+        id: "escrow_released",
+        label: t("Escrow released by admin", "تم إفراج الضمان بواسطة الإدارة"),
+        done: escrowReleasedDone,
+      },
+      {
+        id: "payout_window",
+        label: t("Provider payout window: 24-48h (anti-fraud)", "نافذة سحب المزود: 24-48 ساعة (مكافحة احتيال)"),
+        done: escrowReleasedDone,
+      },
+    ];
+  })();
+
   useEffect(() => {
     if (!booking) {
       return;
     }
-    const orderTrackingId = searchParams.get("OrderTrackingId");
+    const orderTrackingId = searchParams.get("session_id") || searchParams.get("OrderTrackingId");
     if (!orderTrackingId || hasAutoVerifiedRef.current) {
       return;
     }
@@ -393,6 +533,14 @@ export default function BookingDetailsPage() {
                 <p className="summary-price">
                   {booking.total_amount} {booking.service_currency}
                 </p>
+                <div className="price-breakdown">
+                  <p className="page-sub mini">
+                    {t("Subtotal", "المبلغ الأساسي")}: {booking.subtotal_amount} {booking.service_currency}
+                  </p>
+                  <p className="page-sub mini">
+                    {t("Platform Fee (4%)", "رسوم المنصة (4٪)")}: {booking.platform_fee} {booking.service_currency}
+                  </p>
+                </div>
 
                 <div className="meta-row">
                   <span className={`status-pill status-${booking.status.toLowerCase()}`}>{pretty(booking.status)}</span>
@@ -408,6 +556,20 @@ export default function BookingDetailsPage() {
                 <p className="page-sub mini">{t("Travel Date", "تاريخ السفر")}: {booking.travel_date || t("Not set", "غير محدد")}</p>
                 <p className="page-sub mini">{t("Availability Slot", "موعد التوفر")}: {booking.availability_start_at ? `${new Date(booking.availability_start_at).toLocaleString()} - ${new Date(booking.availability_end_at || booking.availability_start_at).toLocaleString()}` : t("Not selected", "غير محدد")}</p>
                 <p className="page-sub mini">{t("Payment Reference", "مرجع الدفع")}: {booking.payment_reference || t("Not created yet", "لم يتم إنشاؤه بعد")}</p>
+                <p className="page-sub mini">
+                  {t("Provider completion", "تأكيد المزود للإكمال")}:{" "}
+                  {booking.provider_completed_confirmed_at ? new Date(booking.provider_completed_confirmed_at).toLocaleString() : t("Pending", "قيد الانتظار")}
+                </p>
+                <p className="page-sub mini">
+                  {t("Customer completion", "تأكيد العميل للإكمال")}:{" "}
+                  {booking.customer_completed_confirmed_at ? new Date(booking.customer_completed_confirmed_at).toLocaleString() : t("Pending", "قيد الانتظار")}
+                </p>
+                {booking.status === "REQUESTED" && booking.acceptance_deadline_at ? (
+                  <p className="page-sub mini">
+                    {t("Provider acceptance deadline", "الموعد النهائي لقبول المزود")}:{" "}
+                    {new Date(booking.acceptance_deadline_at).toLocaleString()}
+                  </p>
+                ) : null}
               </article>
 
               <article className="panel compact-card">
@@ -456,15 +618,26 @@ export default function BookingDetailsPage() {
                     <p className="page-sub mini">{t("Messaging unlocks only after payment.", "تتفعّل المحادثة فقط بعد الدفع.")}</p>
                   ) : null}
 
-                  {canSimulatePayment ? (
+                  {canInitiatePayment ? (
                     <div className="payment-box">
+                      <div className="price-breakdown">
+                        <p className="page-sub mini">
+                          {t("Subtotal", "المبلغ الأساسي")}: {booking.subtotal_amount} {booking.service_currency}
+                        </p>
+                        <p className="page-sub mini">
+                          {t("Platform Fee (4%)", "رسوم المنصة (4٪)")}: {booking.platform_fee} {booking.service_currency}
+                        </p>
+                        <p className="page-sub mini">
+                          {t("Total to pay", "إجمالي الدفع")}: {booking.total_amount} {booking.service_currency}
+                        </p>
+                      </div>
                       <p className="page-sub mini">
                         {t("Choose payment method", "اختر طريقة الدفع")}
                       </p>
                       <div className="payment-method-row">
                         <button
                           className={`mini-btn payment-option ${selectedPaymentMethod === "CARD" ? "payment-option-active" : ""}`}
-                          onClick={() => void handleStartPesapalPayment("CARD")}
+                          onClick={() => void handleStartStripePayment("CARD")}
                           type="button"
                           disabled={actionLoading === "payment-init"}
                         >
@@ -472,24 +645,16 @@ export default function BookingDetailsPage() {
                         </button>
                         <button
                           className={`mini-btn payment-option ${selectedPaymentMethod === "APPLE_PAY" ? "payment-option-active" : ""}`}
-                          onClick={() => void handleStartPesapalPayment("APPLE_PAY")}
+                          onClick={() => void handleStartStripePayment("APPLE_PAY")}
                           type="button"
                           disabled={actionLoading === "payment-init"}
                         >
                            {t("Apple Pay", "آبل باي")}
                         </button>
-                        <button
-                          className={`mini-btn payment-option ${selectedPaymentMethod === "MPESA" ? "payment-option-active" : ""}`}
-                          onClick={() => void handleStartPesapalPayment("MPESA")}
-                          type="button"
-                          disabled={actionLoading === "payment-init"}
-                        >
-                          📲 M-Pesa
-                        </button>
                       </div>
                       <button
                         className="btn btn-primary"
-                        onClick={() => void handleStartPesapalPayment()}
+                        onClick={() => void handleStartStripePayment()}
                         disabled={actionLoading === "payment-init"}
                       >
                         {actionLoading === "payment-init"
@@ -507,11 +672,45 @@ export default function BookingDetailsPage() {
                       </button>
                       <p className="page-sub mini">
                         {t(
-                          "Checkout is handled by Pesapal. Available rails depend on your region and gateway support.",
-                          "يتم الدفع عبر بيسابال. وسائل الدفع المتاحة تعتمد على المنطقة ودعم البوابة."
+                          "You can pay before provider acceptance. Provider has 24 hours to accept before auto-cancellation.",
+                          "يمكنك الدفع قبل قبول المزود. لدى المزود 24 ساعة للقبول قبل الإلغاء التلقائي."
+                        )}
+                      </p>
+                      <p className="page-sub mini">
+                        {t(
+                          "Checkout is handled by Stripe. Apple Pay appears automatically when available on the device/browser.",
+                          "يتم الدفع عبر Stripe. يظهر Apple Pay تلقائياً عند توفره على الجهاز والمتصفح."
                         )}
                       </p>
                     </div>
+                  ) : null}
+
+                  {canConfirmCompletion ? (
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => void handleConfirmCompletion()}
+                      disabled={actionLoading === "confirm-completion"}
+                    >
+                      {actionLoading === "confirm-completion"
+                        ? t("Saving...", "جاري الحفظ...")
+                        : t("Confirm Service Completed", "تأكيد اكتمال الخدمة")}
+                    </button>
+                  ) : null}
+                  {needsOtherPartyConfirmation ? (
+                    <p className="page-sub mini">
+                      {t(
+                        "Your completion confirmation is saved. Waiting for the other party before admin can release escrow.",
+                        "تم حفظ تأكيد الإكمال الخاص بك. ننتظر الطرف الآخر قبل أن تتمكن الإدارة من إفراج الضمان."
+                      )}
+                    </p>
+                  ) : null}
+                  {booking.ready_for_escrow_release ? (
+                    <p className="page-sub mini">
+                      {t(
+                        "Both confirmations are complete. Admin can now release escrow.",
+                        "اكتمل تأكيد الطرفين. يمكن للإدارة الآن إفراج الضمان."
+                      )}
+                    </p>
                   ) : null}
 
                   <div className="quick-links">
@@ -527,6 +726,20 @@ export default function BookingDetailsPage() {
             </section>
 
             <section className="panel">
+              <h2 className="section-title">{t("Service Lifecycle", "دورة الخدمة")}</h2>
+              <div className="timeline-list">
+                {lifecycleSteps.map((step) => (
+                  <article key={step.id} className="timeline-event">
+                    <p>
+                      <strong>{step.done ? "✓" : "•"}</strong> {step.label}
+                    </p>
+                    {step.at ? <p className="page-sub mini">{new Date(step.at).toLocaleString()}</p> : null}
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel">
               <h2 className="section-title">{t("Status Timeline", "الجدول الزمني للحالة")}</h2>
               {events.length === 0 ? (
                 <p className="page-sub mini">{t("No status updates yet.", "لا توجد تحديثات حالة بعد.")}</p>
@@ -539,6 +752,27 @@ export default function BookingDetailsPage() {
                       </p>
                       <p className="page-sub mini">{entry.note || t("No note", "لا توجد ملاحظة")}</p>
                       <p className="page-sub mini">{new Date(entry.created_at).toLocaleString()}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="panel">
+              <h2 className="section-title">{t("Payment Activity", "نشاط الدفع")}</h2>
+              {paymentEvents.length === 0 ? (
+                <p className="page-sub mini">{t("No payment events yet.", "لا توجد أحداث دفع بعد.")}</p>
+              ) : (
+                <div className="timeline-list">
+                  {paymentEvents.map((entry) => (
+                    <article key={entry.id} className="timeline-event">
+                      <p>
+                        <strong>{pretty(entry.event_type)}</strong>
+                      </p>
+                      <p className="page-sub mini">
+                        {t("Reference", "المرجع")}: {entry.external_reference || t("Not available", "غير متوفر")}
+                      </p>
+                      <p className="page-sub mini">{new Date(entry.processed_at || entry.received_at).toLocaleString()}</p>
                     </article>
                   ))}
                 </div>

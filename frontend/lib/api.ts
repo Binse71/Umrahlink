@@ -287,6 +287,9 @@ export interface PayoutLedger {
   paid_by: number | null;
   paid_by_name: string;
   paid_at: string | null;
+  payout_window_start_at: string | null;
+  payout_window_end_at: string | null;
+  payout_window_state: "NOT_STARTED" | "EARLY_HOLD" | "IN_WINDOW" | "OVERDUE";
   created_at: string;
   updated_at: string;
 }
@@ -786,6 +789,14 @@ export function sendMessage(token: string, payload: { thread: number; body: stri
 
 export function markMessageRead(token: string, messageId: number) {
   return request<ChatMessage>(`/messaging/messages/${messageId}/mark_read/`, { method: "POST", token });
+}
+
+export function markThreadMessagesRead(token: string, thread: number) {
+  return request<{ updated: number }>("/messaging/messages/mark-thread-read/", {
+    method: "POST",
+    token,
+    body: { thread }
+  });
 }
 
 export function listDisputes(token: string) {

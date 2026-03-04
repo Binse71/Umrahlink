@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.utils import timezone
 
 from .models import PayoutLedger, ProviderPayoutProfile
 
@@ -70,6 +71,31 @@ class PayoutLedgerSerializer(serializers.ModelSerializer):
     booking_reference = serializers.UUIDField(source="booking.reference", read_only=True)
     approved_by_name = serializers.CharField(source="approved_by.get_full_name", read_only=True)
     paid_by_name = serializers.CharField(source="paid_by.get_full_name", read_only=True)
+    payout_window_start_at = serializers.SerializerMethodField()
+    payout_window_end_at = serializers.SerializerMethodField()
+    payout_window_state = serializers.SerializerMethodField()
+
+    def get_payout_window_start_at(self, obj):
+        if not obj.approved_at:
+            return None
+        return obj.approved_at + timezone.timedelta(hours=24)
+
+    def get_payout_window_end_at(self, obj):
+        if not obj.approved_at:
+            return None
+        return obj.approved_at + timezone.timedelta(hours=48)
+
+    def get_payout_window_state(self, obj):
+        if not obj.approved_at:
+            return "NOT_STARTED"
+        now = timezone.now()
+        start_at = obj.approved_at + timezone.timedelta(hours=24)
+        end_at = obj.approved_at + timezone.timedelta(hours=48)
+        if now < start_at:
+            return "EARLY_HOLD"
+        if start_at <= now <= end_at:
+            return "IN_WINDOW"
+        return "OVERDUE"
 
     class Meta:
         model = PayoutLedger
@@ -93,6 +119,9 @@ class PayoutLedgerSerializer(serializers.ModelSerializer):
             "paid_by",
             "paid_by_name",
             "paid_at",
+            "payout_window_start_at",
+            "payout_window_end_at",
+            "payout_window_state",
             "created_at",
             "updated_at",
         )

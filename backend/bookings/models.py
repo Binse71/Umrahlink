@@ -9,6 +9,8 @@ from django.utils import timezone
 from accounts.models import ProviderProfile, User
 from marketplace.models import Service
 
+PLATFORM_FEE_RATE = Decimal("0.08")
+
 
 class Booking(models.Model):
     class Status(models.TextChoices):
@@ -51,6 +53,9 @@ class Booking(models.Model):
 
     payment_reference = models.CharField(max_length=120, blank=True)
     cancellation_reason = models.TextField(blank=True)
+    acceptance_deadline_at = models.DateTimeField(null=True, blank=True)
+    provider_completed_confirmed_at = models.DateTimeField(null=True, blank=True)
+    customer_completed_confirmed_at = models.DateTimeField(null=True, blank=True)
     cancelled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -91,7 +96,7 @@ class Booking(models.Model):
         if not self.subtotal_amount or self.subtotal_amount == Decimal("0"):
             self.subtotal_amount = self.service.price_amount
         if not self.platform_fee or self.platform_fee == Decimal("0"):
-            self.platform_fee = (self.subtotal_amount * Decimal("0.08")).quantize(Decimal("0.01"))
+            self.platform_fee = (self.subtotal_amount * PLATFORM_FEE_RATE).quantize(Decimal("0.01"))
         if not self.total_amount or self.total_amount == Decimal("0"):
             self.total_amount = (self.subtotal_amount + self.platform_fee).quantize(Decimal("0.01"))
 
@@ -111,6 +116,10 @@ class Booking(models.Model):
             self.Status.CANCELLED,
         }
         return valid_escrow and not_cancelled
+
+    @property
+    def has_both_completion_confirmations(self) -> bool:
+        return bool(self.provider_completed_confirmed_at and self.customer_completed_confirmed_at)
 
     def reserve_availability_slot(self):
         if not self.availability_slot_id:

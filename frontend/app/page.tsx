@@ -8,6 +8,8 @@ import {
   ArrowRight,
   BadgeCheck,
   CalendarClock,
+  Check,
+  ChevronDown,
   CircleDollarSign,
   Globe2,
   Handshake,
@@ -15,7 +17,9 @@ import {
   Languages,
   MapPin,
   MessageCircle,
+  Search,
   ShieldCheck,
+  Sparkles,
   Star,
   Users,
   Wallet
@@ -167,10 +171,10 @@ export default function HomePage() {
       <header className="container topbar fade-up" style={{ animationDelay: "0.08s" }}>
         <Link href="/" className="brand brand-header" aria-label="Umrah Link Home">
           <Image
-            src="/umrah-link-logo.png"
+            src="/umrah-link-logo-transparent-trimmed.png"
             alt="Umrah Link logo"
-            width={660}
-            height={660}
+            width={642}
+            height={597}
             className="brand-logo brand-logo-header"
             priority
           />
@@ -209,10 +213,10 @@ export default function HomePage() {
       <main>
         <section className="container home-hero fade-up" style={{ animationDelay: "0.16s" }}>
           <div className="hero-copy">
-            <p className="hero-badge">{t("Trusted by pilgrims worldwide", "موثوق من المعتمرين حول العالم")}</p>
+            <p className="hero-badge"><Sparkles size={14} aria-hidden="true" /> {t("Trusted Umrah care, thoughtfully matched", "رعاية موثوقة للعمرة، باختيار مدروس")}</p>
             <h1>
-              {t("Find Your Perfect", "اعثر على")}
-              <span> {t("Umrah Support", "خدمة عمرة المناسبة")}</span>
+              {t("Your journey deserves", "رحلتك تستحق")}
+              <span> {t("trusted hands.", "أيادي موثوقة.")}</span>
             </h1>
             <p className="hero-text">
               {t(
@@ -223,7 +227,7 @@ export default function HomePage() {
 
             <div className="cta-row">
               <Link href="/marketplace" className="btn btn-primary">
-                {t("Browse Providers", "تصفح المزودين")} <ArrowRight size={17} />
+                {t("Find your provider", "اعثر على مزودك")} <ArrowRight size={17} />
               </Link>
               <Link href="/signup/provider" className="btn btn-outline">
                 {t("Join as Provider", "انضم كمزود")}
@@ -244,12 +248,22 @@ export default function HomePage() {
                 <span>{t("Verified Providers", "مزود معتمد")}</span>
               </div>
             </div>
+
+            <div className="hero-assurance" aria-label={t("Booking assurances", "ضمانات الحجز")}>
+              <span><Check size={14} aria-hidden="true" /> {t("Verified profiles", "ملفات موثقة")}</span>
+              <span><Check size={14} aria-hidden="true" /> {t("Protected payment", "دفع محمي")}</span>
+              <span><Check size={14} aria-hidden="true" /> {t("Human support", "دعم بشري")}</span>
+            </div>
           </div>
 
           <aside className="hero-panel">
+            <div className="hero-panel-glow" aria-hidden="true" />
             <div className="panel-head">
-              <p>{t("Get Matched in 2 Minutes", "احصل على المزود المناسب خلال دقيقتين")}</p>
-              <span>{t("Step 1 of 2", "الخطوة 1 من 2")}</span>
+              <div>
+                <small>{t("PERSONALISED MATCH", "اختيار مخصص")}</small>
+                <p>{t("What support do you need?", "ما نوع الدعم الذي تحتاجه؟")}</p>
+              </div>
+              <span><Search size={14} aria-hidden="true" /></span>
             </div>
 
             <div className="package-option">
@@ -261,6 +275,7 @@ export default function HomePage() {
             </div>
 
             <div className="package-option active">
+              <span className="selected-check"><Check size={13} aria-hidden="true" /></span>
               <div>
                 <p>{t("Ziyarah Guide (Makkah + Madinah)", "مرشد زيارة (مكة + المدينة)")}</p>
                 <small>{t("Most popular • Arabic, English, Urdu", "الأكثر طلباً • العربية والإنجليزية والأردية")}</small>
@@ -283,6 +298,14 @@ export default function HomePage() {
                 <strong>{t("Completed", "مكتمل")}</strong>
               </p>
             </div>
+
+            <Link href="/marketplace" className="match-action">
+              <span>{t("See your best matches", "شاهد أفضل الخيارات")}</span>
+              <span><ArrowRight size={17} aria-hidden="true" /></span>
+            </Link>
+            <button className="panel-scroll-cue" type="button" aria-label={t("More information below", "معلومات إضافية أدناه")} onClick={() => document.getElementById("how-it-works")?.scrollIntoView({ behavior: "smooth" })}>
+              <ChevronDown size={16} aria-hidden="true" />
+            </button>
           </aside>
         </section>
 
@@ -420,10 +443,10 @@ export default function HomePage() {
           <div>
             <div className="brand footer-brand">
               <Image
-                src="/umrah-link-logo.png"
+                src="/umrah-link-logo-transparent-trimmed.png"
                 alt="Umrah Link logo"
-                width={660}
-                height={660}
+                width={642}
+                height={597}
                 className="brand-logo brand-logo-footer"
               />
             </div>

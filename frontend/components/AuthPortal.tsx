@@ -329,10 +329,10 @@ export default function AuthPortal({ context = "auth" }: { context?: AuthContext
       <header className="container simple-topbar">
         <Link href="/" className="brand brand-header" aria-label="Umrah Link Home">
           <Image
-            src="/umrah-link-logo.png"
+            src="/umrah-link-logo-transparent-trimmed.png"
             alt="Umrah Link logo"
-            width={660}
-            height={660}
+            width={642}
+            height={597}
             className="brand-logo brand-logo-header"
           />
         </Link>

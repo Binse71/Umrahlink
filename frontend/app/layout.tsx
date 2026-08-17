@@ -3,6 +3,7 @@ import { Noto_Kufi_Arabic, Fraunces, Plus_Jakarta_Sans } from "next/font/google"
 import { LanguageProvider } from "@/components/LanguageProvider";
 import "./globals.css";
 import "./premium.css";
+import "./experience.css";
 
 const heading = Fraunces({
   subsets: ["latin"],
@@ -27,9 +28,9 @@ export const metadata: Metadata = {
   description:
     "Umrah Link connects customers with verified providers for Umrah Badal, Ziyarah guides, and Umrah assistants through one trusted marketplace.",
   icons: {
-    icon: "/umrah-link-logo.png",
-    shortcut: "/umrah-link-logo.png",
-    apple: "/umrah-link-logo.png"
+    icon: "/umrah-link-logo-transparent-trimmed.png",
+    shortcut: "/umrah-link-logo-transparent-trimmed.png",
+    apple: "/umrah-link-logo-transparent-trimmed.png"
   }
 };
 

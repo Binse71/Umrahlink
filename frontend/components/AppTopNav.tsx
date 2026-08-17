@@ -25,7 +25,7 @@ export default function AppTopNav({
   return (
     <header className="container simple-topbar">
       <Link href="/" className="brand brand-header" aria-label="Umrah Link Home">
-        <Image src="/umrah-link-logo.png" alt="Umrah Link logo" width={660} height={660} className="brand-logo brand-logo-header" />
+        <Image src="/umrah-link-logo-transparent-trimmed.png" alt="Umrah Link logo" width={642} height={597} className="brand-logo brand-logo-header" />
       </Link>
 
       <nav className="inline-links">

@@ -127,6 +127,7 @@ WSGI_APPLICATION = "umrah_link.wsgi.application"
 ASGI_APPLICATION = "umrah_link.asgi.application"
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+LEGACY_DATABASE_URL = os.getenv("LEGACY_DATABASE_URL", "").strip()
 if DATABASE_URL:
     DATABASES = {"default": database_config_from_url(DATABASE_URL)}
 elif IS_RAILWAY:
@@ -138,6 +139,9 @@ else:
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+if LEGACY_DATABASE_URL:
+    DATABASES["legacy"] = database_config_from_url(LEGACY_DATABASE_URL)
 
 AUTH_PASSWORD_VALIDATORS = [
     {

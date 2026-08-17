@@ -74,3 +74,17 @@ class ProviderProfile(models.Model):
     @property
     def is_verified(self) -> bool:
         return self.verification_status == self.VerificationStatus.APPROVED
+
+
+class ProviderPhoto(models.Model):
+    provider_profile = models.OneToOneField(
+        ProviderProfile,
+        on_delete=models.CASCADE,
+        related_name="stored_photo",
+    )
+    content = models.BinaryField()
+    content_type = models.CharField(max_length=100, default="application/octet-stream")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"ProviderPhoto<{self.provider_profile_id}>"

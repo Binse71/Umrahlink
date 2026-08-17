@@ -7,6 +7,7 @@ from .views import (
     LogoutView,
     MeView,
     ProviderProfileMeView,
+    ProviderDirectoryPhotoView,
     ProviderModerationViewSet,
     ProviderLoginView,
     RegisterCustomerView,
@@ -19,6 +20,7 @@ router.register(r"admin/providers", ProviderModerationViewSet, basename="admin-p
 router.register(r"admin/users", UserModerationViewSet, basename="admin-users")
 
 urlpatterns = [
+    path("providers/<int:pk>/photo/", ProviderDirectoryPhotoView.as_view(), name="provider-directory-photo"),
     path("register/customer/", RegisterCustomerView.as_view(), name="register-customer"),
     path("register/provider/", RegisterProviderView.as_view(), name="register-provider"),
     path("login/", LoginView.as_view(), name="login"),

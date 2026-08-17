@@ -35,6 +35,7 @@ def database_config_from_url(url: str) -> dict:
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
 
 CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "").strip()
 CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
@@ -45,10 +46,24 @@ USE_CLOUDINARY_MEDIA = bool(CLOUDINARY_URL) or all(
 )
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "change-me-in-production")
-DEBUG = os.getenv("DJANGO_DEBUG", "1") == "1"
+DEBUG = env_bool("DJANGO_DEBUG", not IS_RAILWAY)
 ALLOWED_HOSTS_ENV = [host.strip() for host in os.getenv("DJANGO_ALLOWED_HOSTS", "").split(",") if host.strip()]
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = ALLOWED_HOSTS_ENV
+elif IS_RAILWAY:
+    railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+    railway_private_domain = os.getenv("RAILWAY_PRIVATE_DOMAIN", "").strip()
+    ALLOWED_HOSTS = [
+        ".up.railway.app",
+        ".railway.internal",
+        "healthcheck.railway.app",
+        "localhost",
+        "127.0.0.1",
+    ]
+    if railway_domain:
+        ALLOWED_HOSTS.append(railway_domain)
+    if railway_private_domain:
+        ALLOWED_HOSTS.append(railway_private_domain)
 elif DEBUG:
     ALLOWED_HOSTS = ["*"]
 else:
@@ -82,6 +97,7 @@ if USE_CLOUDINARY_MEDIA:
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -113,6 +129,8 @@ ASGI_APPLICATION = "umrah_link.asgi.application"
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 if DATABASE_URL:
     DATABASES = {"default": database_config_from_url(DATABASE_URL)}
+elif IS_RAILWAY:
+    raise RuntimeError("DATABASE_URL is required when running on Railway.")
 else:
     DATABASES = {
         "default": {
@@ -143,6 +161,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 MEDIA_URL = "/media/"
 if USE_CLOUDINARY_MEDIA:
     CLOUDINARY_STORAGE = {"SECURE": True}
@@ -157,7 +176,7 @@ if USE_CLOUDINARY_MEDIA:
     DEFAULT_FILE_STORAGE = "cloudinary_storage.storage.MediaCloudinaryStorage"
     STORAGES = {
         "default": {"BACKEND": "cloudinary_storage.storage.MediaCloudinaryStorage"},
-        "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+        "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
     }
 else:
     default_media_root = BASE_DIR / "media"
@@ -175,7 +194,26 @@ else:
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "accounts.User"
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+CORS_ALLOW_ALL_ORIGINS = DEBUG and not CORS_ALLOWED_ORIGINS
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
+if IS_RAILWAY:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+    SECURE_SSL_REDIRECT = True
+    SECURE_REDIRECT_EXEMPT = [r"^api/health/$"]
+    SECURE_HSTS_SECONDS = 3600
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

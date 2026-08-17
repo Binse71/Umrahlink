@@ -1,6 +1,7 @@
 from django.contrib.auth import get_user_model
 from django.contrib.auth import authenticate, login, logout
 from django.db.models import Q
+from django.http import Http404, HttpResponse
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework import mixins, status, viewsets
@@ -12,6 +13,7 @@ from rest_framework.views import APIView
 from notifications.services import notify_user
 
 from .models import ProviderProfile
+from .photo_store import get_provider_photo
 from .permissions import IsPlatformAdmin
 from .serializers import (
     CustomerRegisterSerializer,
@@ -22,6 +24,19 @@ from .serializers import (
 )
 
 User = get_user_model()
+
+
+class ProviderDirectoryPhotoView(APIView):
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, _request, pk):
+        photo = get_provider_photo(provider_profile_id=pk)
+        if not photo:
+            raise Http404("Provider photo not found.")
+        response = HttpResponse(bytes(photo.content), content_type=photo.content_type)
+        response["Cache-Control"] = "public, max-age=3600"
+        return response
 
 
 def auth_payload(user):

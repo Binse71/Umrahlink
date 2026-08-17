@@ -36,6 +36,10 @@ class BookingSerializer(serializers.ModelSerializer):
             "total_amount",
             "payment_reference",
             "cancellation_reason",
+            "acceptance_deadline_at",
+            "provider_completed_confirmed_at",
+            "customer_completed_confirmed_at",
+            "has_both_completion_confirmations",
             "completed_at",
             "created_at",
             "updated_at",
@@ -53,6 +57,10 @@ class BookingSerializer(serializers.ModelSerializer):
             "subtotal_amount",
             "platform_fee",
             "total_amount",
+            "acceptance_deadline_at",
+            "provider_completed_confirmed_at",
+            "customer_completed_confirmed_at",
+            "has_both_completion_confirmations",
             "completed_at",
             "created_at",
             "updated_at",
@@ -85,3 +93,19 @@ class PaymentWebhookSerializer(serializers.Serializer):
         if "booking_id" not in attrs and "booking_reference" not in attrs:
             raise serializers.ValidationError("Provide booking_id or booking_reference.")
         return attrs
+
+
+class PaymentWebhookEventSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentWebhookEvent
+        fields = (
+            "id",
+            "booking",
+            "external_reference",
+            "event_type",
+            "payload",
+            "processed",
+            "received_at",
+            "processed_at",
+        )
+        read_only_fields = fields

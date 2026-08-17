@@ -52,9 +52,18 @@ if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = ALLOWED_HOSTS_ENV
 elif IS_RAILWAY:
     railway_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
-    ALLOWED_HOSTS = [".up.railway.app"]
+    railway_private_domain = os.getenv("RAILWAY_PRIVATE_DOMAIN", "").strip()
+    ALLOWED_HOSTS = [
+        ".up.railway.app",
+        ".railway.internal",
+        "healthcheck.railway.app",
+        "localhost",
+        "127.0.0.1",
+    ]
     if railway_domain:
         ALLOWED_HOSTS.append(railway_domain)
+    if railway_private_domain:
+        ALLOWED_HOSTS.append(railway_private_domain)
 elif DEBUG:
     ALLOWED_HOSTS = ["*"]
 else:
